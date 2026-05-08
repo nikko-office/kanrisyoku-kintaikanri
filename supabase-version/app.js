@@ -3,7 +3,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const CONFIG = window.KINTAI_SUPABASE_CONFIG || {};
 const supabase = createClient(CONFIG.url || '', CONFIG.publishableKey || '', {
   auth: {
-    detectSessionInUrl: true,
+    detectSessionInUrl: false,
     flowType: 'pkce',
   },
 });
@@ -126,6 +126,7 @@ async function restoreSessionFromOAuthRedirect() {
   const searchParams = new URLSearchParams(window.location.search);
   const code = searchParams.get('code');
   if (code) {
+    showMessage('Google認証情報を確認中...');
     const { data, error } = await supabase.auth.exchangeCodeForSession(code);
     throwIf(error);
     cleanOAuthParamsFromUrl();
