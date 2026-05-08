@@ -49,7 +49,14 @@ function showMessage(text, isError = false) {
 }
 
 function normalizeError(error) {
-  return String(error && error.message ? error.message : error).replace(/^Error:\s*/, '');
+  const message = String(error && error.message ? error.message : error).replace(/^Error:\s*/, '');
+  if (/email rate limit exceeded/i.test(message)) {
+    return 'Supabaseのメール送信上限に達しました。標準メール機能は試用向けで送信数が少ないため、しばらく待ってから再送するか、SupabaseでCustom SMTPを設定してください。';
+  }
+  if (/For security purposes, you can only request this after/i.test(message)) {
+    return 'ログインリンクは短時間に連続送信できません。少し待ってから再送してください。';
+  }
+  return message;
 }
 
 function setBusy(busy) {
@@ -512,6 +519,11 @@ async function signIn() {
   assertConfigured();
   const email = $('loginEmail').value.trim().toLowerCase();
   if (!email) throw new Error('メールアドレスを入力してください。');
+  const cooldownUntil = Number(window.localStorage.getItem('kintaiLoginCooldownUntil') || 0);
+  const remainingSeconds = Math.ceil((cooldownUntil - Date.now()) / 1000);
+  if (remainingSeconds > 0) {
+    throw new Error(`ログインリンクは送信済みです。${remainingSeconds}秒後に再送できます。`);
+  }
   const { error } = await supabase.auth.signInWithOtp({
     email,
     options: {
@@ -520,6 +532,7 @@ async function signIn() {
     },
   });
   throwIf(error);
+  window.localStorage.setItem('kintaiLoginCooldownUntil', String(Date.now() + 60 * 1000));
 }
 
 async function signOut() {
