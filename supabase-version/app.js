@@ -56,6 +56,9 @@ function normalizeError(error) {
   if (/For security purposes, you can only request this after/i.test(message)) {
     return 'ログインリンクは短時間に連続送信できません。少し待ってから再送してください。';
   }
+  if (/provider is not enabled|unsupported provider|external provider/i.test(message)) {
+    return 'SupabaseでGoogleログインがまだ有効化されていません。Authentication > Sign In / Providers > Google の設定を確認してください。';
+  }
   return message;
 }
 
@@ -517,22 +520,18 @@ async function upsertAttendance(payload) {
 
 async function signIn() {
   assertConfigured();
-  const email = $('loginEmail').value.trim().toLowerCase();
-  if (!email) throw new Error('メールアドレスを入力してください。');
-  const cooldownUntil = Number(window.localStorage.getItem('kintaiLoginCooldownUntil') || 0);
-  const remainingSeconds = Math.ceil((cooldownUntil - Date.now()) / 1000);
-  if (remainingSeconds > 0) {
-    throw new Error(`ログインリンクは送信済みです。${remainingSeconds}秒後に再送できます。`);
-  }
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
+  const redirectTo = window.location.href.split(/[?#]/)[0];
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
     options: {
-      emailRedirectTo: window.location.href.split('#')[0],
-      shouldCreateUser: true,
+      redirectTo,
+      queryParams: {
+        hd: 'nikko-m.com',
+        prompt: 'select_account',
+      },
     },
   });
   throwIf(error);
-  window.localStorage.setItem('kintaiLoginCooldownUntil', String(Date.now() + 60 * 1000));
 }
 
 async function signOut() {
@@ -692,7 +691,7 @@ document.addEventListener('click', async (event) => {
 });
 
 $('loginButton').addEventListener('click', async () => {
-  await performAction('loginButton', 'ログインリンクを送信中...', 'メールを送信しました。メール内のリンクからログインしてください。', signIn);
+  await performAction('loginButton', 'Googleログインへ移動中...', 'Googleログインへ移動します。', signIn);
 });
 
 $('logoutButton').addEventListener('click', () => performAction('logoutButton', 'ログアウト中...', 'ログアウトしました。', signOut));
