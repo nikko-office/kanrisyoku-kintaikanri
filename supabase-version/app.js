@@ -263,8 +263,10 @@ async function loadUsers() {
 async function init() {
   try {
     assertConfigured();
-    // onAuthStateChange fires INITIAL_SESSION immediately and handles rendering.
-    // Do NOT call safeRenderAuthState() here — double-render leaves appPanel hidden.
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+    state.session = data.session;
+    await safeRenderAuthState();
   } catch (error) {
     showMessage(normalizeError(error), true);
   }
@@ -850,6 +852,10 @@ window.addEventListener('error', (event) => {
 });
 
 supabase.auth.onAuthStateChange(async (event, session) => {
+  if (event === 'INITIAL_SESSION') {
+    // init() が getSession() で明示的に処理するのでここではスキップ
+    return;
+  }
   if (event === 'PASSWORD_RECOVERY') {
     state.session = session;
     $('loginPanel').classList.add('hidden');
@@ -860,15 +866,10 @@ supabase.auth.onAuthStateChange(async (event, session) => {
     return;
   }
   if (event === 'TOKEN_REFRESHED') {
-    // トークン更新のみ — 画面の再描画は不要
     state.session = session;
     return;
   }
-  const prevUserId = state.session?.user?.id ?? null;
-  const nextUserId = session?.user?.id ?? null;
   state.session = session;
-  // 同一ユーザーの重複イベント (INITIAL_SESSION + SIGNED_IN) はスキップ
-  if (prevUserId !== null && prevUserId === nextUserId) return;
   await safeRenderAuthState();
 });
 
