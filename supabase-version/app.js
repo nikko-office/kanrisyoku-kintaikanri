@@ -1,11 +1,9 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 const CONFIG = window.KINTAI_SUPABASE_CONFIG || {};
-const supabase = createClient(CONFIG.url || '', CONFIG.publishableKey || '', {
-  auth: {
-    lock: (_name, _acquireTimeout, fn) => fn(),
-  },
-});
+
+// ロックバイパスなし、シンプルなクライアント
+const supabase = createClient(CONFIG.url || '', CONFIG.publishableKey || '');
 
 const LEAVE_KINDS = ['出勤', '有休', '午前半休', '午後半休', '時間休', '欠勤', '特別休暇', '休日', '代休', '振替休日'];
 const DAY_TYPES = ['出勤日', '休日', '祝日', '土曜出勤日', '会社休日'];
@@ -16,10 +14,11 @@ const state = {
   users: [],
   settings: {},
   monthly: null,
-  edit: null,
 };
 
 const $ = (id) => document.getElementById(id);
+
+// ─── ユーティリティ ───────────────────────────────────────
 
 function todayIso() {
   return new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' });
@@ -27,222 +26,146 @@ function todayIso() {
 
 function currentTime() {
   return new Date().toLocaleTimeString('ja-JP', {
-    timeZone: 'Asia/Tokyo',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
+    timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit', hour12: false,
   });
 }
 
-function pad2(value) {
-  return String(value).padStart(2, '0');
-}
+function pad2(v) { return String(v).padStart(2, '0'); }
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (char) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#039;',
-  })[char]);
+function escapeHtml(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[c]);
 }
 
 function showMessage(text, isError = false) {
-  $('message').innerHTML = text ? `<div class="notice ${isError ? 'error' : ''}">${escapeHtml(text)}</div>` : '';
+  $('message').innerHTML = text
+    ? `<div class="notice ${isError ? 'error' : ''}">${escapeHtml(text)}</div>`
+    : '';
 }
 
-function normalizeError(error) {
-  const message = String(error && error.message ? error.message : error).replace(/^Error:\s*/, '');
-  if (/Invalid login credentials/i.test(message)) {
-    return 'メールアドレスまたはパスワードが正しくありません。';
-  }
-  if (/Email not confirmed/i.test(message)) {
-    return 'メールアドレスが確認されていません。招待メールのリンクをクリックしてから再度ログインしてください。';
-  }
-  if (/email rate limit exceeded/i.test(message)) {
-    return 'Supabaseのメール送信上限に達しました。しばらく待ってから再試行してください。';
-  }
-  if (/For security purposes, you can only request this after/i.test(message)) {
-    return 'リセットメールは短時間に連続送信できません。少し待ってから再送してください。';
-  }
-  return message;
+function clearMessage() { $('message').innerHTML = ''; }
+
+function normalizeError(err) {
+  const msg = String(err?.message || err || '不明なエラー').replace(/^Error:\s*/, '');
+  if (/Invalid login credentials/i.test(msg)) return 'メールアドレスまたはパスワードが正しくありません。';
+  if (/Email not confirmed/i.test(msg)) return 'メールアドレスが未確認です。招待メールのリンクをクリックしてください。';
+  if (/email rate limit/i.test(msg)) return 'メール送信上限に達しました。しばらく待ってから再試行してください。';
+  if (/only request this after/i.test(msg)) return 'リセットメールは連続送信できません。少し待ってから再送してください。';
+  return msg;
 }
 
-function setBusy(busy) {
-  document.querySelectorAll('button').forEach((button) => {
-    button.disabled = busy;
-  });
+function throwIf(error) { if (error) throw error; }
+
+function minutesToHours(min) {
+  if (min === null || min === undefined || min === '') return '';
+  return `${Math.round((Number(min) / 60) * 100) / 100}h`;
 }
 
-function startAction(buttonId, text) {
-  const button = $(buttonId);
-  if (!button) return;
-  button.dataset.originalText = button.dataset.originalText || button.textContent;
-  button.textContent = text;
-  button.classList.add('busy');
+function timeOnly(v) { return v ? String(v).slice(0, 5) : ''; }
+
+function weekdayLabel(dateStr) {
+  return ['日','月','火','水','木','金','土'][new Date(`${dateStr}T00:00:00+09:00`).getDay()];
 }
 
-function finishAction(buttonId) {
-  const button = $(buttonId);
-  if (!button) return;
-  if (button.dataset.originalText) button.textContent = button.dataset.originalText;
-  button.classList.remove('busy');
-}
-
-async function performAction(buttonId, busyText, successText, action) {
-  showMessage(busyText);
-  setBusy(true);
-  startAction(buttonId, busyText);
-  try {
-    const result = await action();
-    showMessage(successText);
-    return result;
-  } catch (error) {
-    showMessage(normalizeError(error), true);
-    return null;
-  } finally {
-    finishAction(buttonId);
-    setBusy(false);
-  }
-}
-
-function assertConfigured() {
-  if (!CONFIG.url || !CONFIG.publishableKey || CONFIG.url.includes('YOUR-PROJECT-REF')) {
-    throw new Error('config.js に Supabase Project URL と publishable key を設定してください。');
-  }
-}
-
-function throwIf(error) {
-  if (error) throw error;
-}
-
-function minutesToHours(minutes) {
-  if (minutes === null || minutes === undefined || minutes === '') return '';
-  return `${Math.round((Number(minutes) / 60) * 100) / 100}h`;
-}
-
-function timeOnly(value) {
-  if (!value) return '';
-  return String(value).slice(0, 5);
-}
-
-function weekdayLabel(dateString) {
-  return ['日', '月', '火', '水', '木', '金', '土'][new Date(`${dateString}T00:00:00+09:00`).getDay()];
-}
-
-function getPeriodForDate(dateString) {
-  const closingDay = Number(state.settings.closingDay || 15);
-  const [yearText, monthText, dayText] = dateString.split('-');
-  let year = Number(yearText);
-  let month = Number(monthText);
-  const day = Number(dayText);
-
-  if (day > closingDay) {
-    month += 1;
-    if (month > 12) {
-      month = 1;
-      year += 1;
-    }
-  }
-
-  return getPeriodRange(`${year}-${pad2(month)}`);
+function getPeriodForDate(dateStr) {
+  const cd = Number(state.settings.closingDay || 15);
+  let [y, m, d] = dateStr.split('-').map(Number);
+  if (d > cd) { m++; if (m > 12) { m = 1; y++; } }
+  return getPeriodRange(`${y}-${pad2(m)}`);
 }
 
 function getPeriodRange(periodKey) {
-  const closingDay = Number(state.settings.closingDay || 15);
-  const [endYearText, endMonthText] = periodKey.split('-');
-  const endYear = Number(endYearText);
-  const endMonth = Number(endMonthText);
-  let startYear = endYear;
-  let startMonth = endMonth - 1;
-  if (startMonth <= 0) {
-    startMonth = 12;
-    startYear -= 1;
-  }
+  const cd = Number(state.settings.closingDay || 15);
+  const [ey, em] = periodKey.split('-').map(Number);
+  let sy = ey, sm = em - 1;
+  if (sm <= 0) { sm = 12; sy--; }
   return {
     periodKey,
-    label: `${endYear}年${endMonth}月度`,
-    startDate: `${startYear}-${pad2(startMonth)}-${pad2(closingDay + 1)}`,
-    endDate: `${endYear}-${pad2(endMonth)}-${pad2(closingDay)}`,
+    label: `${ey}年${em}月度`,
+    startDate: `${sy}-${pad2(sm)}-${pad2(cd + 1)}`,
+    endDate: `${ey}-${pad2(em)}-${pad2(cd)}`,
   };
 }
 
-function enumerateDates(startDate, endDate) {
+function enumerateDates(start, end) {
   const dates = [];
-  const current = new Date(`${startDate}T00:00:00+09:00`);
-  const end = new Date(`${endDate}T00:00:00+09:00`);
-  while (current <= end) {
-    dates.push(current.toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }));
-    current.setDate(current.getDate() + 1);
+  const cur = new Date(`${start}T00:00:00+09:00`);
+  const fin = new Date(`${end}T00:00:00+09:00`);
+  while (cur <= fin) {
+    dates.push(cur.toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' }));
+    cur.setDate(cur.getDate() + 1);
   }
   return dates;
 }
 
-function classifyDate(dateString, calendarMap) {
-  const override = calendarMap.get(dateString);
-  if (override) {
-    return {
-      type: override.day_type,
-      name: override.name || '',
-      isWorkday: override.day_type === '出勤日' || override.day_type === '土曜出勤日',
-    };
-  }
-
-  const day = new Date(`${dateString}T00:00:00+09:00`).getDay();
-  const holiday = day === 0 || day === 6;
-  return {
-    type: holiday ? '休日' : '出勤日',
-    name: '',
-    isWorkday: !holiday,
-  };
+function classifyDate(dateStr, calMap) {
+  const ov = calMap.get(dateStr);
+  if (ov) return { type: ov.day_type, name: ov.name || '', isWorkday: ov.day_type === '出勤日' || ov.day_type === '土曜出勤日' };
+  const d = new Date(`${dateStr}T00:00:00+09:00`).getDay();
+  const holiday = d === 0 || d === 6;
+  return { type: holiday ? '休日' : '出勤日', name: '', isWorkday: !holiday };
 }
 
 function leaveHoursForKind(kind) {
-  const hoursPerDay = Number(state.settings.hourlyLeaveHoursPerDay || 8);
-  if (['有休', '欠勤', '特別休暇', '代休', '振替休日'].includes(kind)) return hoursPerDay;
-  if (kind === '午前半休' || kind === '午後半休') return hoursPerDay / 2;
+  const h = Number(state.settings.hourlyLeaveHoursPerDay || 8);
+  if (['有休','欠勤','特別休暇','代休','振替休日'].includes(kind)) return h;
+  if (kind === '午前半休' || kind === '午後半休') return h / 2;
   return null;
 }
 
-function rowClass(row) {
-  const classes = [];
-  if (row.weekday === '土') classes.push('saturday');
-  if (row.dayType === '休日') classes.push('holiday');
-  if (row.dayType === '祝日') classes.push('national-holiday');
-  if (row.dayType === '会社休日') classes.push('company-holiday');
-  if (row.missingClockOut) classes.push('missing');
-  return classes.join(' ');
+function fillSelect(sel, items, selected) {
+  sel.innerHTML = items.map((item) => {
+    const v = typeof item === 'string' ? item : item.value;
+    const l = typeof item === 'string' ? item : item.label;
+    return `<option value="${escapeHtml(v)}">${escapeHtml(l)}</option>`;
+  }).join('');
+  if (selected) sel.value = selected;
 }
 
-function fillSelect(select, items, selected) {
-  select.innerHTML = items.map((item) => {
-    const value = typeof item === 'string' ? item : item.value;
-    const label = typeof item === 'string' ? item : item.label;
-    return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
-  }).join('');
-  if (selected) select.value = selected;
+function setBusy(busy) {
+  document.querySelectorAll('button').forEach((b) => { b.disabled = busy; });
 }
+
+async function withBusy(buttonId, busyText, successText, fn) {
+  const btn = $(buttonId);
+  const origText = btn?.textContent;
+  if (btn) { btn.textContent = busyText; btn.classList.add('busy'); }
+  setBusy(true);
+  showMessage(busyText);
+  try {
+    await fn();
+    showMessage(successText);
+  } catch (err) {
+    showMessage(normalizeError(err), true);
+  } finally {
+    if (btn) { btn.textContent = origText; btn.classList.remove('busy'); }
+    setBusy(false);
+  }
+}
+
+// ─── 画面切替 ────────────────────────────────────────────
+
+function showPanel(panelId) {
+  ['loginPanel','appPanel','unauthorizedPanel','passwordResetPanel'].forEach((id) => {
+    $(id).classList.toggle('hidden', id !== panelId);
+  });
+}
+
+// ─── データロード ─────────────────────────────────────────
 
 async function loadSettings() {
   const { data, error } = await supabase.from('app_settings').select('key,value');
   throwIf(error);
   state.settings = {};
-  (data || []).forEach((row) => {
-    state.settings[row.key] = row.value;
-  });
+  (data || []).forEach((r) => { state.settings[r.key] = r.value; });
   $('appName').textContent = state.settings.companyName || '管理職勤怠管理';
 }
 
 async function loadProfile() {
   const email = state.session?.user?.email?.toLowerCase();
   const { data, error } = await supabase
-    .from('app_users')
-    .select('*')
-    .eq('active', true)
-    .eq('email', email)
-    .limit(1)
-    .maybeSingle();
+    .from('app_users').select('*')
+    .eq('active', true).eq('email', email).limit(1).maybeSingle();
   throwIf(error);
   state.profile = data;
   return data;
@@ -250,91 +173,41 @@ async function loadProfile() {
 
 async function loadUsers() {
   const { data, error } = await supabase
-    .from('app_users')
-    .select('*')
-    .eq('active', true)
-    .order('role', { ascending: true })
-    .order('name', { ascending: true });
+    .from('app_users').select('*').eq('active', true)
+    .order('role', { ascending: true }).order('name', { ascending: true });
   throwIf(error);
   state.users = data || [];
-  return state.users;
 }
 
-async function init() {
-  console.log('[INIT] start');
+// ─── アプリ表示 ───────────────────────────────────────────
+
+async function renderApp() {
   try {
-    assertConfigured();
-    console.log('[INIT] assertConfigured OK');
-    const { data, error } = await supabase.auth.getSession();
-    console.log('[INIT] getSession done, session=', data?.session?.user?.email ?? 'null', 'error=', error?.message ?? 'none');
-    if (error) throw error;
-    state.session = data.session;
-    console.log('[INIT] calling safeRenderAuthState');
-    await safeRenderAuthState();
-    console.log('[INIT] safeRenderAuthState complete');
-  } catch (error) {
-    console.log('[INIT] caught error:', error?.message);
-    showMessage(normalizeError(error), true);
-  }
-}
+    showMessage('読み込み中...');
+    await loadSettings();
+    const profile = await loadProfile();
 
-async function renderAuthState() {
-  console.log('[RENDER] start, session=', state.session?.user?.email ?? 'null');
-  const session = state.session;
-  $('account').textContent = session?.user?.email || '';
-  $('loginPanel').classList.toggle('hidden', Boolean(session));
-  $('appPanel').classList.add('hidden');
-  $('unauthorizedPanel').classList.add('hidden');
-
-  if (!session) { console.log('[RENDER] no session, showing loginPanel'); return; }
-
-  console.log('[RENDER] calling loadSettings');
-  await loadSettings();
-  console.log('[RENDER] calling loadProfile');
-  const profile = await loadProfile();
-  if (!profile) {
-    $('unauthorizedText').textContent = `${session.user.email} は利用者に登録されていません。ADMINに追加を依頼してください。`;
-    $('unauthorizedPanel').classList.remove('hidden');
-    return;
-  }
-
-  if (profile.role === 'admin') {
-    await loadUsers();
-  } else {
-    state.users = [profile];
-  }
-
-  renderMain();
-  await loadMonthly();
-}
-
-let _renderingAuthState = false;
-let _pendingRenderAuthState = false;
-
-async function safeRenderAuthState() {
-  if (_renderingAuthState) {
-    _pendingRenderAuthState = true;
-    return;
-  }
-  _renderingAuthState = true;
-  _pendingRenderAuthState = false;
-  try {
-    await renderAuthState();
-  } catch (error) {
-    console.error('renderAuthState failed:', error);
-    $('appPanel').classList.add('hidden');
-    $('unauthorizedPanel').classList.add('hidden');
-    if (!state.session) {
-      $('loginPanel').classList.remove('hidden');
+    if (!profile) {
+      showPanel('unauthorizedPanel');
+      $('unauthorizedText').textContent =
+        `${state.session.user.email} は利用者に登録されていません。管理者に追加を依頼してください。`;
+      clearMessage();
+      return;
     }
-    const prefix = state.session ? 'ログインは完了しましたが、初期データの読み込みに失敗しました' : '初期データの読み込みに失敗しました';
-    showMessage(`${prefix}: ${normalizeError(error)}`, true);
-  } finally {
-    _renderingAuthState = false;
-    if (_pendingRenderAuthState) {
-      _pendingRenderAuthState = false;
-      await safeRenderAuthState();
+
+    if (profile.role === 'admin') {
+      await loadUsers();
+    } else {
+      state.users = [profile];
     }
+
+    showPanel('appPanel');
+    $('account').textContent = state.session.user.email;
+    renderMain();
+    await loadMonthly();
+    clearMessage();
+  } catch (err) {
+    showMessage(`データ読み込みエラー: ${normalizeError(err)}`, true);
   }
 }
 
@@ -342,13 +215,14 @@ function renderMain() {
   const today = todayIso();
   const period = getPeriodForDate(today);
   const isAdmin = state.profile.role === 'admin';
-  $('appPanel').classList.remove('hidden');
+
   $('todayDate').textContent = today;
   $('leaveDate').value = today;
   $('adminDate').value = today;
   $('calendarDate').value = today;
   $('periodInput').value = period.periodKey;
   $('periodLabel').textContent = `${period.label} ${period.startDate} - ${period.endDate}`;
+
   $('scopeInput').classList.toggle('hidden', !isAdmin);
   $('exportCsvButton').classList.toggle('hidden', !isAdmin);
   $('adminTabButton').classList.toggle('hidden', !isAdmin);
@@ -356,11 +230,14 @@ function renderMain() {
   $('usersTabButton').classList.toggle('hidden', !isAdmin);
   $('scopeInput').value = 'self';
 
-  fillSelect($('leaveKind'), LEAVE_KINDS.filter((kind) => kind !== '出勤'), '時間休');
+  fillSelect($('leaveKind'), LEAVE_KINDS.filter((k) => k !== '出勤'), '時間休');
   fillSelect($('adminKind'), LEAVE_KINDS, '出勤');
   fillSelect($('calendarType'), DAY_TYPES, '土曜出勤日');
-  fillSelect($('adminUserId'), state.users.map((user) => ({ value: user.id, label: `${user.name} <${user.email}>` })), state.profile.id);
-  $('usersText').value = state.users.map((user) => `${user.email}, ${user.name}, ${user.role}, ${user.active ? 'TRUE' : 'FALSE'}`).join('\n');
+  fillSelect($('adminUserId'),
+    state.users.map((u) => ({ value: u.id, label: `${u.name} <${u.email}>` })),
+    state.profile.id);
+  $('usersText').value = state.users
+    .map((u) => `${u.email}, ${u.name}, ${u.role}, ${u.active ? 'TRUE' : 'FALSE'}`).join('\n');
   renderAdminEdit(null);
 }
 
@@ -369,67 +246,43 @@ async function loadMonthly() {
   const isAdmin = state.profile.role === 'admin';
   const scope = isAdmin ? $('scopeInput').value : 'self';
   const users = isAdmin && scope === 'all' ? state.users : [state.profile];
-  const userIds = users.map((user) => user.id);
+  const userIds = users.map((u) => u.id);
 
-  const [{ data: records, error: recordError }, { data: calendar, error: calendarError }, { data: closing, error: closingError }] = await Promise.all([
-    supabase
-      .from('attendance_records')
-      .select('*, app_users(id,email,name)')
-      .gte('work_date', period.startDate)
-      .lte('work_date', period.endDate)
-      .in('user_id', userIds),
-    supabase
-      .from('calendar_days')
-      .select('*')
-      .gte('work_date', period.startDate)
-      .lte('work_date', period.endDate),
-    supabase
-      .from('monthly_closings')
-      .select('*')
-      .eq('period_key', period.periodKey)
-      .maybeSingle(),
-  ]);
-  throwIf(recordError);
-  throwIf(calendarError);
-  throwIf(closingError);
+  const [{ data: records, error: e1 }, { data: calendar, error: e2 }, { data: closing, error: e3 }] =
+    await Promise.all([
+      supabase.from('attendance_records').select('*, app_users(id,email,name)')
+        .gte('work_date', period.startDate).lte('work_date', period.endDate).in('user_id', userIds),
+      supabase.from('calendar_days').select('*')
+        .gte('work_date', period.startDate).lte('work_date', period.endDate),
+      supabase.from('monthly_closings').select('*')
+        .eq('period_key', period.periodKey).maybeSingle(),
+    ]);
+  throwIf(e1); throwIf(e2); throwIf(e3);
 
-  const recordMap = new Map((records || []).map((record) => [`${record.user_id}|${record.work_date}`, record]));
-  const calendarMap = new Map((calendar || []).map((day) => [day.work_date, day]));
+  const recMap = new Map((records || []).map((r) => [`${r.user_id}|${r.work_date}`, r]));
+  const calMap = new Map((calendar || []).map((d) => [d.work_date, d]));
   const rows = [];
 
   users.forEach((user) => {
     enumerateDates(period.startDate, period.endDate).forEach((date) => {
-      const day = classifyDate(date, calendarMap);
-      const record = recordMap.get(`${user.id}|${date}`) || {};
+      const day = classifyDate(date, calMap);
+      const rec = recMap.get(`${user.id}|${date}`) || {};
       rows.push({
-        id: record.id || '',
-        date,
-        weekday: weekdayLabel(date),
-        dayType: day.type,
-        dayName: day.name,
-        userId: user.id,
-        email: user.email,
-        name: user.name || user.email,
-        kind: record.kind || (day.isWorkday ? '' : '休日'),
-        clockIn: timeOnly(record.clock_in),
-        clockOut: timeOnly(record.clock_out),
-        breakMinutes: record.break_minutes ?? '',
-        workMinutes: record.work_minutes ?? '',
-        nightMinutes: record.night_minutes ?? '',
-        leaveHours: record.leave_hours ?? '',
-        note: record.note || '',
-        missingClockOut: Boolean(record.clock_in && !record.clock_out),
+        date, weekday: weekdayLabel(date), dayType: day.type, dayName: day.name,
+        userId: user.id, email: user.email, name: user.name || user.email,
+        kind: rec.kind || (day.isWorkday ? '' : '休日'),
+        clockIn: timeOnly(rec.clock_in), clockOut: timeOnly(rec.clock_out),
+        breakMinutes: rec.break_minutes ?? '', workMinutes: rec.work_minutes ?? '',
+        nightMinutes: rec.night_minutes ?? '', leaveHours: rec.leave_hours ?? '',
+        note: rec.note || '', missingClockOut: Boolean(rec.clock_in && !rec.clock_out),
       });
     });
   });
 
   state.monthly = {
-    period,
+    period, rows, isAdmin,
     closed: closing?.status === 'CLOSED',
-    closing,
-    rows,
     summaries: summarizeRows(rows),
-    isAdmin,
   };
   renderMonthly();
 }
@@ -438,59 +291,58 @@ function summarizeRows(rows) {
   const map = new Map();
   rows.forEach((row) => {
     if (!map.has(row.userId)) {
-      map.set(row.userId, {
-        userId: row.userId,
-        name: row.name,
-        workDays: 0,
-        workMinutes: 0,
-        nightMinutes: 0,
-        paidLeaveDays: 0,
-        leaveHours: 0,
-        missingClockOut: 0,
-        holidayWorkDays: 0,
-      });
+      map.set(row.userId, { userId: row.userId, name: row.name,
+        workDays: 0, workMinutes: 0, nightMinutes: 0,
+        paidLeaveDays: 0, leaveHours: 0, missingClockOut: 0 });
     }
-    const summary = map.get(row.userId);
-    if (row.clockIn) summary.workDays += 1;
-    summary.workMinutes += Number(row.workMinutes || 0);
-    summary.nightMinutes += Number(row.nightMinutes || 0);
-    summary.leaveHours += Number(row.leaveHours || 0);
-    if (row.kind === '有休') summary.paidLeaveDays += 1;
-    if (row.kind === '午前半休' || row.kind === '午後半休') summary.paidLeaveDays += 0.5;
-    if (row.missingClockOut) summary.missingClockOut += 1;
-    if (row.clockIn && row.dayType !== '出勤日' && row.dayType !== '土曜出勤日') summary.holidayWorkDays += 1;
+    const s = map.get(row.userId);
+    if (row.clockIn) s.workDays++;
+    s.workMinutes += Number(row.workMinutes || 0);
+    s.nightMinutes += Number(row.nightMinutes || 0);
+    s.leaveHours += Number(row.leaveHours || 0);
+    if (row.kind === '有休') s.paidLeaveDays++;
+    if (row.kind === '午前半休' || row.kind === '午後半休') s.paidLeaveDays += 0.5;
+    if (row.missingClockOut) s.missingClockOut++;
   });
-  return Array.from(map.values()).map((summary) => ({
-    ...summary,
-    workHours: Math.round((summary.workMinutes / 60) * 100) / 100,
-    nightHours: Math.round((summary.nightMinutes / 60) * 100) / 100,
+  return Array.from(map.values()).map((s) => ({
+    ...s,
+    workHours: Math.round((s.workMinutes / 60) * 100) / 100,
+    nightHours: Math.round((s.nightMinutes / 60) * 100) / 100,
   }));
 }
 
 function renderMonthly() {
-  const monthly = state.monthly;
-  $('periodLabel').textContent = `${monthly.period.label} ${monthly.period.startDate} - ${monthly.period.endDate}`;
-  $('closingBadge').textContent = monthly.closed ? '締め済み' : '未締め';
-  $('closingBadge').className = `badge ${monthly.closed ? 'closed' : 'open'}`;
+  const m = state.monthly;
+  $('periodLabel').textContent = `${m.period.label} ${m.period.startDate} - ${m.period.endDate}`;
+  $('closingBadge').textContent = m.closed ? '締め済み' : '未締め';
+  $('closingBadge').className = `badge ${m.closed ? 'closed' : 'open'}`;
 
-  const today = monthly.rows.find((row) => row.userId === state.profile.id && row.date === todayIso()) || {};
+  const today = m.rows.find((r) => r.userId === state.profile.id && r.date === todayIso()) || {};
   $('todayClockIn').textContent = today.clockIn || '-';
   $('todayClockOut').textContent = today.clockOut || '-';
   $('todayKind').textContent = today.kind || '-';
 
-  $('summary').innerHTML = monthly.summaries.map((summary) => `
-    <div class="metric"><span>${escapeHtml(summary.name)}</span><strong>${summary.workDays}日 / ${summary.workHours}h</strong></div>
-    <div class="metric"><span>有休</span><strong>${summary.paidLeaveDays}日</strong></div>
-    <div class="metric"><span>休暇時間</span><strong>${summary.leaveHours || 0}h</strong></div>
-    <div class="metric"><span>深夜</span><strong>${summary.nightHours || 0}h</strong></div>
-    <div class="metric"><span>退勤漏れ</span><strong>${summary.missingClockOut}</strong></div>
+  $('summary').innerHTML = m.summaries.map((s) => `
+    <div class="metric"><span>${escapeHtml(s.name)}</span><strong>${s.workDays}日 / ${s.workHours}h</strong></div>
+    <div class="metric"><span>有休</span><strong>${s.paidLeaveDays}日</strong></div>
+    <div class="metric"><span>休暇時間</span><strong>${s.leaveHours}h</strong></div>
+    <div class="metric"><span>深夜</span><strong>${s.nightHours}h</strong></div>
+    <div class="metric"><span>退勤漏れ</span><strong>${s.missingClockOut}</strong></div>
   `).join('');
 
-  $('monthlyBody').innerHTML = monthly.rows.map((row) => `
-    <tr class="${rowClass(row)} ${monthly.isAdmin ? 'editable-row' : ''}" data-user-id="${escapeHtml(row.userId)}" data-date="${escapeHtml(row.date)}">
+  $('monthlyBody').innerHTML = m.rows.map((row) => {
+    const cls = [
+      row.weekday === '土' ? 'saturday' : '',
+      row.dayType === '休日' ? 'holiday' : '',
+      row.dayType === '祝日' ? 'national-holiday' : '',
+      row.dayType === '会社休日' ? 'company-holiday' : '',
+      row.missingClockOut ? 'missing' : '',
+      m.isAdmin ? 'editable-row' : '',
+    ].filter(Boolean).join(' ');
+    return `<tr class="${cls}" data-user-id="${escapeHtml(row.userId)}" data-date="${escapeHtml(row.date)}">
       <td>${escapeHtml(row.date)}</td>
       <td>${escapeHtml(row.weekday)}</td>
-      <td>${escapeHtml(row.dayType)} ${row.dayName ? `<span class="badge">${escapeHtml(row.dayName)}</span>` : ''}</td>
+      <td>${escapeHtml(row.dayType)}${row.dayName ? ` <span class="badge">${escapeHtml(row.dayName)}</span>` : ''}</td>
       <td>${escapeHtml(row.name)}</td>
       <td>${escapeHtml(row.kind)}</td>
       <td>${escapeHtml(row.clockIn)}</td>
@@ -500,387 +352,255 @@ function renderMonthly() {
       <td>${escapeHtml(minutesToHours(row.nightMinutes))}</td>
       <td>${escapeHtml(row.leaveHours)}</td>
       <td>${escapeHtml(row.note)}</td>
-    </tr>
-  `).join('');
-}
-
-function selectTab(name) {
-  document.querySelectorAll('.tab').forEach((button) => {
-    button.classList.toggle('active', button.dataset.tab === name);
-  });
-  ['leave', 'admin', 'calendar', 'users'].forEach((tab) => {
-    $(`${tab}Tab`).classList.toggle('hidden', tab !== name);
-  });
+    </tr>`;
+  }).join('');
 }
 
 function renderAdminEdit(edit) {
-  const status = $('adminEditStatus');
-  if (!status) return;
-  if (!edit) {
-    status.innerHTML = '<div class="metric"><span>修正対象</span><strong>未読込</strong></div>';
-    return;
-  }
-  status.innerHTML = `
+  const el = $('adminEditStatus');
+  if (!el) return;
+  el.innerHTML = edit ? `
     <div class="metric"><span>対象</span><strong>${escapeHtml(edit.name)}</strong></div>
     <div class="metric"><span>日付</span><strong>${escapeHtml(edit.work_date)}</strong></div>
     <div class="metric"><span>状態</span><strong>${edit.id ? '記録あり' : '新規修正'}</strong></div>
     <div class="metric"><span>締め</span><strong>${state.monthly?.closed ? '締め済み' : '未締め'}</strong></div>
-  `;
+  ` : '<div class="metric"><span>修正対象</span><strong>未読込</strong></div>';
+}
+
+function selectTab(name) {
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+  ['leave','admin','calendar','users'].forEach((t) => $(`${t}Tab`).classList.toggle('hidden', t !== name));
+}
+
+// ─── アクション ───────────────────────────────────────────
+
+async function upsertAttendance(payload) {
+  const { error } = await supabase.from('attendance_records')
+    .upsert(payload, { onConflict: 'work_date,user_id' });
+  throwIf(error);
 }
 
 async function loadAdminEdit() {
   const userId = $('adminUserId').value;
   const date = $('adminDate').value;
-  const user = state.users.find((item) => item.id === userId);
-  const { data, error } = await supabase
-    .from('attendance_records')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('work_date', date)
-    .maybeSingle();
+  const user = state.users.find((u) => u.id === userId);
+  const { data, error } = await supabase.from('attendance_records').select('*')
+    .eq('user_id', userId).eq('work_date', date).maybeSingle();
   throwIf(error);
-  const record = data || {
-    id: '',
-    work_date: date,
-    user_id: userId,
-    kind: '出勤',
-    clock_in: '',
-    clock_out: '',
-    leave_hours: '',
-    note: '',
-  };
-  state.edit = { ...record, name: user?.name || user?.email || '' };
-  $('adminKind').value = record.kind || '出勤';
-  $('adminClockIn').value = timeOnly(record.clock_in);
-  $('adminClockOut').value = timeOnly(record.clock_out);
-  $('adminLeaveHours').value = record.leave_hours ?? '';
-  $('adminNote').value = record.note || '';
-  renderAdminEdit(state.edit);
+  const rec = data || { id: '', work_date: date, user_id: userId, kind: '出勤' };
+  const edit = { ...rec, name: user?.name || user?.email || '' };
+  state.edit = edit;
+  $('adminKind').value = rec.kind || '出勤';
+  $('adminClockIn').value = timeOnly(rec.clock_in);
+  $('adminClockOut').value = timeOnly(rec.clock_out);
+  $('adminLeaveHours').value = rec.leave_hours ?? '';
+  $('adminNote').value = rec.note || '';
+  renderAdminEdit(edit);
 }
 
-async function upsertAttendance(payload) {
-  const { error } = await supabase
-    .from('attendance_records')
-    .upsert(payload, { onConflict: 'work_date,user_id' });
+async function closeMonth(status) {
+  const period = getPeriodRange($('periodInput').value);
+  const { error } = await supabase.from('monthly_closings').upsert({
+    period_key: period.periodKey, start_date: period.startDate,
+    end_date: period.endDate, status,
+    closed_at: new Date().toISOString(), closed_by: state.session.user.id,
+  });
   throwIf(error);
 }
 
-async function signIn() {
-  assertConfigured();
+function exportCsv() {
+  const m = state.monthly;
+  const header = ['月度','締日','集計開始日','集計終了日','日付','曜日','日区分','日名','氏名','メール','勤務区分','出勤','退勤','休憩分','勤務分','深夜分','休暇時間','備考'];
+  const lines = [header].concat(m.rows.map((r) => [
+    m.period.label, `${state.settings.closingDay || 15}日`,
+    m.period.startDate, m.period.endDate,
+    r.date, r.weekday, r.dayType, r.dayName, r.name, r.email,
+    r.kind, r.clockIn, r.clockOut, r.breakMinutes, r.workMinutes,
+    r.nightMinutes, r.leaveHours, r.note,
+  ]));
+  const csv = lines.map((row) => row.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `attendance-${m.period.periodKey}.csv`;
+  a.click();
+}
+
+// ─── 認証 ─────────────────────────────────────────────────
+
+async function init() {
+  if (!CONFIG.url || !CONFIG.publishableKey || CONFIG.url.includes('YOUR-PROJECT-REF')) {
+    showMessage('config.js を確認してください。Supabase URL と publishable key を設定してください。', true);
+    showPanel('loginPanel');
+    return;
+  }
+
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) throw error;
+
+    if (data.session) {
+      state.session = data.session;
+      await renderApp();
+    } else {
+      showPanel('loginPanel');
+    }
+  } catch (err) {
+    showPanel('loginPanel');
+    showMessage(normalizeError(err), true);
+  }
+}
+
+// PASSWORD_RECOVERY のみ onAuthStateChange で処理
+supabase.auth.onAuthStateChange(async (event, session) => {
+  if (event === 'PASSWORD_RECOVERY') {
+    state.session = session;
+    showPanel('passwordResetPanel');
+    showMessage('新しいパスワードを入力してください。');
+  }
+});
+
+// ─── イベントリスナー ─────────────────────────────────────
+
+$('loginButton').addEventListener('click', () => withBusy('loginButton', 'ログイン中...', '', async () => {
   const email = $('loginEmail').value.trim();
   const password = $('loginPassword').value;
   if (!email || !password) throw new Error('メールアドレスとパスワードを入力してください。');
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   throwIf(error);
-}
+  state.session = data.session;
+  clearMessage();
+  await renderApp();
+}));
 
-async function signOut() {
-  const { error } = await supabase.auth.signOut();
+$('loginPassword').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('loginButton').click(); });
+
+$('forgotPasswordButton').addEventListener('click', () => withBusy('forgotPasswordButton', '送信中...', 'パスワードリセットメールを送信しました。', async () => {
+  const email = $('loginEmail').value.trim();
+  if (!email) throw new Error('メールアドレスを入力してください。');
+  const redirectTo = location.origin + location.pathname;
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
   throwIf(error);
-  state.session = null;
-  state.profile = null;
-  state.users = [];
-  state.monthly = null;
-  await renderAuthState();
-}
+}));
 
-async function setNewPassword() {
+$('setPasswordButton').addEventListener('click', () => withBusy('setPasswordButton', '変更中...', 'パスワードを変更しました。再度ログインしてください。', async () => {
   const password = $('newPassword').value;
   const confirm = $('confirmPassword').value;
   if (!password || password.length < 6) throw new Error('パスワードは6文字以上で入力してください。');
   if (password !== confirm) throw new Error('パスワードが一致しません。');
   const { error } = await supabase.auth.updateUser({ password });
   throwIf(error);
-  $('passwordResetPanel').classList.add('hidden');
-  showMessage('パスワードを変更しました。ログインしてください。');
+  state.session = null;
+  await supabase.auth.signOut();
+  showPanel('loginPanel');
+}));
+
+async function logout() {
   await supabase.auth.signOut();
   state.session = null;
-  await renderAuthState();
+  state.profile = null;
+  state.users = [];
+  state.monthly = null;
+  $('account').textContent = '';
+  showPanel('loginPanel');
+  clearMessage();
 }
 
-async function sendPasswordReset(email) {
-  const redirectTo = window.location.origin + window.location.pathname;
-  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
-  throwIf(error);
-}
+$('logoutButton').addEventListener('click', () => withBusy('logoutButton', 'ログアウト中...', '', logout));
+$('logoutUnauthorizedButton').addEventListener('click', () => withBusy('logoutUnauthorizedButton', 'ログアウト中...', '', logout));
 
-async function clockIn() {
-  await upsertAttendance({
-    work_date: todayIso(),
-    user_id: state.profile.id,
-    kind: '出勤',
-    clock_in: currentTime(),
-    edit_reason: '出勤打刻',
-  });
-}
+$('clockInButton').addEventListener('click', () => withBusy('clockInButton', '出勤を記録中...', '出勤を記録しました。', async () => {
+  await upsertAttendance({ work_date: todayIso(), user_id: state.profile.id, kind: '出勤', clock_in: currentTime(), edit_reason: '出勤打刻' });
+  await loadMonthly();
+}));
 
-async function clockOut() {
-  const date = todayIso();
-  const { data, error } = await supabase
-    .from('attendance_records')
-    .select('*')
-    .eq('user_id', state.profile.id)
-    .eq('work_date', date)
-    .maybeSingle();
+$('clockOutButton').addEventListener('click', () => withBusy('clockOutButton', '退勤を記録中...', '退勤を記録しました。', async () => {
+  const { data, error } = await supabase.from('attendance_records').select('*')
+    .eq('user_id', state.profile.id).eq('work_date', todayIso()).maybeSingle();
   throwIf(error);
   if (!data?.clock_in) throw new Error('出勤打刻がありません。先に出勤を記録してください。');
-  await upsertAttendance({
-    ...data,
-    clock_out: currentTime(),
-    edit_reason: '退勤打刻',
-  });
-}
+  await upsertAttendance({ ...data, clock_out: currentTime(), edit_reason: '退勤打刻' });
+  await loadMonthly();
+}));
 
-async function saveLeave() {
+$('saveLeaveButton').addEventListener('click', () => withBusy('saveLeaveButton', '休暇を登録中...', '休暇を登録しました。', async () => {
   const kind = $('leaveKind').value;
   const leaveHours = kind === '時間休' ? Number($('leaveHours').value) : leaveHoursForKind(kind);
-  if (kind === '時間休' && (!leaveHours || leaveHours <= 0)) {
-    throw new Error('時間休は取得時間を入力してください。');
-  }
-  await upsertAttendance({
-    work_date: $('leaveDate').value,
-    user_id: state.profile.id,
-    kind,
-    leave_hours: leaveHours,
-    note: $('leaveNote').value.trim(),
-    edit_reason: '休暇登録',
-  });
-}
+  if (kind === '時間休' && (!leaveHours || leaveHours <= 0)) throw new Error('時間休は取得時間を入力してください。');
+  await upsertAttendance({ work_date: $('leaveDate').value, user_id: state.profile.id, kind, leave_hours: leaveHours, note: $('leaveNote').value.trim(), edit_reason: '休暇登録' });
+  await loadMonthly();
+}));
 
-async function saveAdminAttendance() {
-  const userId = $('adminUserId').value;
-  const date = $('adminDate').value;
-  const reason = $('adminReason').value.trim() || 'ADMIN勤怠修正';
-  await upsertAttendance({
-    work_date: date,
-    user_id: userId,
-    kind: $('adminKind').value,
-    leave_hours: $('adminLeaveHours').value ? Number($('adminLeaveHours').value) : null,
-    clock_in: $('adminClockIn').value || null,
-    clock_out: $('adminClockOut').value || null,
-    note: $('adminNote').value.trim(),
-    edit_reason: reason,
-  });
-}
-
-async function saveCalendarDay() {
-  const { error } = await supabase
-    .from('calendar_days')
-    .upsert({
-      work_date: $('calendarDate').value,
-      day_type: $('calendarType').value,
-      name: $('calendarName').value.trim(),
-      note: $('calendarNote').value.trim(),
-    }, { onConflict: 'work_date' });
-  throwIf(error);
-}
-
-function parseUsersText() {
-  return $('usersText').value.split(/\r?\n/).map((line) => {
-    const [email, name, role, active] = line.split(',').map((part) => (part || '').trim());
-    return {
-      email: email.toLowerCase(),
-      name: name || email,
-      role: role === 'admin' ? 'admin' : 'user',
-      active: ['true', 'TRUE', '1', '有効'].includes(active),
-    };
-  }).filter((user) => user.email);
-}
-
-async function saveUsers() {
-  const users = parseUsersText();
-  const { error } = await supabase
-    .from('app_users')
-    .upsert(users, { onConflict: 'email' });
-  throwIf(error);
-  await loadUsers();
-  renderMain();
-}
-
-async function closeMonth(status) {
-  const period = getPeriodRange($('periodInput').value);
-  const { error } = await supabase
-    .from('monthly_closings')
-    .upsert({
-      period_key: period.periodKey,
-      start_date: period.startDate,
-      end_date: period.endDate,
-      status,
-      closed_at: new Date().toISOString(),
-      closed_by: state.session.user.id,
-    });
-  throwIf(error);
-}
-
-function exportCsv() {
-  const monthly = state.monthly;
-  const header = ['月度', '締日', '集計開始日', '集計終了日', '日付', '曜日', '日区分', '日名', '氏名', 'メール', '勤務区分', '出勤', '退勤', '休憩分', '勤務分', '深夜分', '休暇時間', '備考'];
-  const lines = [header].concat(monthly.rows.map((row) => [
-    monthly.period.label,
-    `${state.settings.closingDay || 15}日`,
-    monthly.period.startDate,
-    monthly.period.endDate,
-    row.date,
-    row.weekday,
-    row.dayType,
-    row.dayName,
-    row.name,
-    row.email,
-    row.kind,
-    row.clockIn,
-    row.clockOut,
-    row.breakMinutes,
-    row.workMinutes,
-    row.nightMinutes,
-    row.leaveHours,
-    row.note,
-  ]));
-  const csv = lines.map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
-  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = `attendance-${monthly.period.periodKey}_${monthly.period.startDate}_${monthly.period.endDate}_15day.csv`;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-// --- Event Listeners ---
-
-document.addEventListener('click', async (event) => {
-  const tab = event.target.closest('.tab');
-  if (tab) selectTab(tab.dataset.tab);
-});
-
-$('loginButton').addEventListener('click', async () => {
-  await performAction('loginButton', 'ログイン中...', 'ログインしました。', signIn);
-});
-
-$('loginPassword').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') $('loginButton').click();
-});
-
-$('forgotPasswordButton').addEventListener('click', async () => {
-  const email = $('loginEmail').value.trim();
-  if (!email) {
-    showMessage('メールアドレスを入力してからパスワードリセットをクリックしてください。', true);
-    return;
-  }
-  await performAction('forgotPasswordButton', '送信中...', 'パスワードリセットメールを送信しました。受信トレイをご確認ください。', () => sendPasswordReset(email));
-});
-
-$('setPasswordButton').addEventListener('click', () => performAction('setPasswordButton', '変更中...', 'パスワードを変更しました。', setNewPassword));
-
-$('logoutButton').addEventListener('click', () => performAction('logoutButton', 'ログアウト中...', 'ログアウトしました。', signOut));
-$('logoutUnauthorizedButton').addEventListener('click', () => performAction('logoutUnauthorizedButton', 'ログアウト中...', 'ログアウトしました。', signOut));
-
-$('clockInButton').addEventListener('click', async () => {
-  await performAction('clockInButton', '出勤を記録中...', '出勤を記録しました。', async () => {
-    await clockIn();
-    await loadMonthly();
-  });
-});
-
-$('clockOutButton').addEventListener('click', async () => {
-  await performAction('clockOutButton', '退勤を記録中...', '退勤を記録しました。', async () => {
-    await clockOut();
-    await loadMonthly();
-  });
-});
-
-$('saveLeaveButton').addEventListener('click', async () => {
-  await performAction('saveLeaveButton', '休暇を登録中...', '休暇を登録しました。', async () => {
-    await saveLeave();
-    await loadMonthly();
-  });
-});
-
-$('reloadMonthlyButton').addEventListener('click', () => performAction('reloadMonthlyButton', '読み込み中...', '読み込みました。', loadMonthly));
+$('reloadMonthlyButton').addEventListener('click', () => withBusy('reloadMonthlyButton', '読み込み中...', '読み込みました。', loadMonthly));
 $('scopeInput').addEventListener('change', loadMonthly);
 
-$('monthlyBody').addEventListener('click', async (event) => {
+$('monthlyBody').addEventListener('click', async (e) => {
   if (!state.monthly?.isAdmin) return;
-  const row = event.target.closest('tr[data-user-id][data-date]');
+  const row = e.target.closest('tr[data-user-id][data-date]');
   if (!row) return;
   $('adminUserId').value = row.dataset.userId;
   $('adminDate').value = row.dataset.date;
   selectTab('admin');
-  await performAction('adminLoadButton', '修正対象を読み込み中...', '修正対象を読み込みました。', loadAdminEdit);
+  await withBusy('adminLoadButton', '読み込み中...', '読み込みました。', loadAdminEdit);
 });
 
-$('adminLoadButton').addEventListener('click', () => performAction('adminLoadButton', '修正対象を読み込み中...', '修正対象を読み込みました。', loadAdminEdit));
-$('adminSaveButton').addEventListener('click', async () => {
-  await performAction('adminSaveButton', '保存中...', '保存しました。', async () => {
-    await saveAdminAttendance();
-    await loadMonthly();
-    await loadAdminEdit();
+document.addEventListener('click', (e) => {
+  const tab = e.target.closest('.tab');
+  if (tab) selectTab(tab.dataset.tab);
+});
+
+$('adminLoadButton').addEventListener('click', () => withBusy('adminLoadButton', '読み込み中...', '読み込みました。', loadAdminEdit));
+
+$('adminSaveButton').addEventListener('click', () => withBusy('adminSaveButton', '保存中...', '保存しました。', async () => {
+  const reason = $('adminReason').value.trim() || 'ADMIN勤怠修正';
+  await upsertAttendance({
+    work_date: $('adminDate').value, user_id: $('adminUserId').value,
+    kind: $('adminKind').value,
+    leave_hours: $('adminLeaveHours').value ? Number($('adminLeaveHours').value) : null,
+    clock_in: $('adminClockIn').value || null, clock_out: $('adminClockOut').value || null,
+    note: $('adminNote').value.trim(), edit_reason: reason,
   });
-});
+  await loadMonthly();
+  await loadAdminEdit();
+}));
 
-$('closeMonthButton').addEventListener('click', async () => {
-  await performAction('closeMonthButton', '月締め中...', '月締めしました。', async () => {
-    await closeMonth('CLOSED');
-    await loadMonthly();
-  });
-});
+$('closeMonthButton').addEventListener('click', () => withBusy('closeMonthButton', '月締め中...', '月締めしました。', async () => {
+  await closeMonth('CLOSED'); await loadMonthly();
+}));
 
-$('reopenMonthButton').addEventListener('click', async () => {
-  await performAction('reopenMonthButton', '締め解除中...', '締め解除しました。', async () => {
-    await closeMonth('OPEN');
-    await loadMonthly();
-  });
-});
+$('reopenMonthButton').addEventListener('click', () => withBusy('reopenMonthButton', '締め解除中...', '締め解除しました。', async () => {
+  await closeMonth('OPEN'); await loadMonthly();
+}));
 
-$('saveCalendarButton').addEventListener('click', async () => {
-  await performAction('saveCalendarButton', '保存中...', '保存しました。', async () => {
-    await saveCalendarDay();
-    await loadMonthly();
-  });
-});
+$('saveCalendarButton').addEventListener('click', () => withBusy('saveCalendarButton', '保存中...', '保存しました。', async () => {
+  const { error } = await supabase.from('calendar_days').upsert({
+    work_date: $('calendarDate').value, day_type: $('calendarType').value,
+    name: $('calendarName').value.trim(), note: $('calendarNote').value.trim(),
+  }, { onConflict: 'work_date' });
+  throwIf(error);
+  await loadMonthly();
+}));
 
-$('saveUsersButton').addEventListener('click', () => performAction('saveUsersButton', '保存中...', '保存しました。', saveUsers));
-$('exportCsvButton').addEventListener('click', () => performAction('exportCsvButton', 'CSVを作成中...', 'CSVを作成しました。', exportCsv));
+$('saveUsersButton').addEventListener('click', () => withBusy('saveUsersButton', '保存中...', '保存しました。', async () => {
+  const users = $('usersText').value.split(/\r?\n/).map((line) => {
+    const [email, name, role, active] = line.split(',').map((p) => (p || '').trim());
+    return { email: email.toLowerCase(), name: name || email, role: role === 'admin' ? 'admin' : 'user', active: ['true','TRUE','1','有効'].includes(active) };
+  }).filter((u) => u.email);
+  const { error } = await supabase.from('app_users').upsert(users, { onConflict: 'email' });
+  throwIf(error);
+  await loadUsers();
+  renderMain();
+}));
 
-$('sendResetButton').addEventListener('click', () => {
+$('exportCsvButton').addEventListener('click', () => withBusy('exportCsvButton', 'CSV作成中...', 'CSVを作成しました。', exportCsv));
+
+$('sendResetButton').addEventListener('click', () => withBusy('sendResetButton', '送信中...', 'パスワードリセットメールを送信しました。', async () => {
   const email = $('resetEmail').value.trim();
-  if (!email) {
-    showMessage('メールアドレスを入力してください。', true);
-    return;
-  }
-  performAction('sendResetButton', '送信中...', `${email} にパスワードリセットメールを送信しました。`, () => sendPasswordReset(email));
-});
+  if (!email) throw new Error('メールアドレスを入力してください。');
+  const redirectTo = location.origin + location.pathname;
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+  throwIf(error);
+}));
 
-window.addEventListener('unhandledrejection', (event) => {
-  console.error('Unhandled promise rejection:', event.reason);
-  showMessage(`処理中にエラーが発生しました: ${normalizeError(event.reason)}`, true);
-});
-
-window.addEventListener('error', (event) => {
-  console.error('Unhandled error:', event.error || event.message);
-  showMessage(`処理中にエラーが発生しました: ${normalizeError(event.error || event.message)}`, true);
-});
-
-supabase.auth.onAuthStateChange(async (event, session) => {
-  console.log('[AUTH] event=', event, 'userId=', session?.user?.id?.substring(0,8) ?? 'null');
-  if (event === 'INITIAL_SESSION') {
-    // init() が getSession() で明示的に処理するのでここではスキップ
-    return;
-  }
-  if (event === 'PASSWORD_RECOVERY') {
-    state.session = session;
-    $('loginPanel').classList.add('hidden');
-    $('appPanel').classList.add('hidden');
-    $('unauthorizedPanel').classList.add('hidden');
-    $('passwordResetPanel').classList.remove('hidden');
-    showMessage('新しいパスワードを入力してください。');
-    return;
-  }
-  if (event === 'TOKEN_REFRESHED') {
-    state.session = session;
-    return;
-  }
-  state.session = session;
-  await safeRenderAuthState();
-});
-
+// ─── 起動 ──────────────────────────────────────────────────
 init();
