@@ -558,7 +558,7 @@ async function upsertAttendance(payload) {
 
 async function signIn() {
   assertConfigured();
-  const redirectTo = window.location.href.split(/[?#]/)[0];
+  const redirectTo = window.location.href.split('#')[0];
   const { error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
