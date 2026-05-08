@@ -127,6 +127,14 @@ async function restoreSessionFromOAuthRedirect() {
   const searchParams = new URLSearchParams(window.location.search);
   const code = searchParams.get('code');
   if (code) {
+    // 既存セッションが有効なら交換不要（再ログイン時のhang防止）
+    const storageKey = 'sb-scujxtelrspmsxexcrtj-auth-token';
+    const stored = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    const now = Math.floor(Date.now() / 1000);
+    if (stored.access_token && stored.expires_at && stored.expires_at > now + 60) {
+      cleanOAuthParamsFromUrl();
+      return null; // 既存セッションを使う
+    }
     showMessage('Google認証情報を確認中...');
     const { data, error } = await supabase.auth.exchangeCodeForSession(code);
     throwIf(error);
