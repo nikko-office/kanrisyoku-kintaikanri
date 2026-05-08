@@ -258,7 +258,7 @@ async function init() {
     assertConfigured();
     const { data } = await supabase.auth.getSession();
     state.session = data.session;
-    await renderAuthState();
+    await safeRenderAuthState();
   } catch (error) {
     showMessage(normalizeError(error), true);
   }
@@ -289,6 +289,21 @@ async function renderAuthState() {
 
   renderMain();
   await loadMonthly();
+}
+
+async function safeRenderAuthState() {
+  try {
+    await renderAuthState();
+  } catch (error) {
+    console.error('Failed to render authenticated state:', error);
+    $('appPanel').classList.add('hidden');
+    $('unauthorizedPanel').classList.add('hidden');
+    if (!state.session) {
+      $('loginPanel').classList.remove('hidden');
+    }
+    const prefix = state.session ? 'ログインは完了しましたが、初期データの読み込みに失敗しました' : '初期データの読み込みに失敗しました';
+    showMessage(`${prefix}: ${normalizeError(error)}`, true);
+  }
 }
 
 function renderMain() {
@@ -764,9 +779,19 @@ $('saveCalendarButton').addEventListener('click', async () => {
 $('saveUsersButton').addEventListener('click', () => performAction('saveUsersButton', '保存中...', '保存しました。', saveUsers));
 $('exportCsvButton').addEventListener('click', () => performAction('exportCsvButton', 'CSVを作成中...', 'CSVを作成しました。', exportCsv));
 
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled promise rejection:', event.reason);
+  showMessage(`処理中にエラーが発生しました: ${normalizeError(event.reason)}`, true);
+});
+
+window.addEventListener('error', (event) => {
+  console.error('Unhandled error:', event.error || event.message);
+  showMessage(`処理中にエラーが発生しました: ${normalizeError(event.error || event.message)}`, true);
+});
+
 supabase.auth.onAuthStateChange(async (_event, session) => {
   state.session = session;
-  await renderAuthState();
+  await safeRenderAuthState();
 });
 
 init();
