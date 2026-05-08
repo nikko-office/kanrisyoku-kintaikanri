@@ -859,7 +859,16 @@ supabase.auth.onAuthStateChange(async (event, session) => {
     showMessage('新しいパスワードを入力してください。');
     return;
   }
+  if (event === 'TOKEN_REFRESHED') {
+    // トークン更新のみ — 画面の再描画は不要
+    state.session = session;
+    return;
+  }
+  const prevUserId = state.session?.user?.id ?? null;
+  const nextUserId = session?.user?.id ?? null;
   state.session = session;
+  // 同一ユーザーの重複イベント (INITIAL_SESSION + SIGNED_IN) はスキップ
+  if (prevUserId !== null && prevUserId === nextUserId) return;
   await safeRenderAuthState();
 });
 
