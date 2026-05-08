@@ -5,6 +5,7 @@ const supabase = createClient(CONFIG.url || '', CONFIG.publishableKey || '', {
   auth: {
     detectSessionInUrl: false,
     flowType: 'pkce',
+    lock: (_name, _acquireTimeout, fn) => fn(),
   },
 });
 
