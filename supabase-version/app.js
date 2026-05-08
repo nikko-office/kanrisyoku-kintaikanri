@@ -1,7 +1,12 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 const CONFIG = window.KINTAI_SUPABASE_CONFIG || {};
-const supabase = createClient(CONFIG.url || '', CONFIG.publishableKey || '');
+const supabase = createClient(CONFIG.url || '', CONFIG.publishableKey || '', {
+  auth: {
+    detectSessionInUrl: true,
+    flowType: 'pkce',
+  },
+});
 
 const LEAVE_KINDS = ['出勤', '有休', '午前半休', '午後半休', '時間休', '欠勤', '特別休暇', '休日', '代休', '振替休日'];
 const DAY_TYPES = ['出勤日', '休日', '祝日', '土曜出勤日', '会社休日'];
@@ -110,7 +115,23 @@ function throwIf(error) {
   if (error) throw error;
 }
 
-async function restoreSessionFromOAuthHash() {
+function cleanOAuthParamsFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  params.delete('code');
+  const query = params.toString();
+  window.history.replaceState({}, document.title, `${window.location.pathname}${query ? `?${query}` : ''}`);
+}
+
+async function restoreSessionFromOAuthRedirect() {
+  const searchParams = new URLSearchParams(window.location.search);
+  const code = searchParams.get('code');
+  if (code) {
+    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    throwIf(error);
+    cleanOAuthParamsFromUrl();
+    return data.session;
+  }
+
   if (!window.location.hash.includes('access_token=')) return null;
 
   const params = new URLSearchParams(window.location.hash.slice(1));
@@ -274,7 +295,7 @@ async function loadUsers() {
 async function init() {
   try {
     assertConfigured();
-    const restoredSession = await restoreSessionFromOAuthHash();
+    const restoredSession = await restoreSessionFromOAuthRedirect();
     if (restoredSession) {
       state.session = restoredSession;
     } else {
