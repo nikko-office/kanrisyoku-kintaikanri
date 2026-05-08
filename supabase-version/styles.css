@@ -377,3 +377,17 @@ tr.editable-row:hover td {
     grid-template-columns: 1fr;
   }
 }
+
+/* パスワードリセット / ヘルプテキスト */
+.help-text {
+  color: var(--text-muted, #666);
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0.75rem;
+}
+
+#usersTab h3 {
+  margin-top: 1.5rem;
+  font-size: 1rem;
+  border-top: 1px solid var(--border, #ddd);
+  padding-top: 1rem;
+}

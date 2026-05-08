@@ -3,8 +3,6 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const CONFIG = window.KINTAI_SUPABASE_CONFIG || {};
 const supabase = createClient(CONFIG.url || '', CONFIG.publishableKey || '', {
   auth: {
-    detectSessionInUrl: false,
-    flowType: 'pkce',
     lock: (_name, _acquireTimeout, fn) => fn(),
   },
 });
@@ -56,14 +54,17 @@ function showMessage(text, isError = false) {
 
 function normalizeError(error) {
   const message = String(error && error.message ? error.message : error).replace(/^Error:\s*/, '');
+  if (/Invalid login credentials/i.test(message)) {
+    return 'メールアドレスまたはパスワードが正しくありません。';
+  }
+  if (/Email not confirmed/i.test(message)) {
+    return 'メールアドレスが確認されていません。招待メールのリンクをクリックしてから再度ログインしてください。';
+  }
   if (/email rate limit exceeded/i.test(message)) {
-    return 'Supabaseのメール送信上限に達しました。標準メール機能は試用向けで送信数が少ないため、しばらく待ってから再送するか、SupabaseでCustom SMTPを設定してください。';
+    return 'Supabaseのメール送信上限に達しました。しばらく待ってから再試行してください。';
   }
   if (/For security purposes, you can only request this after/i.test(message)) {
-    return 'ログインリンクは短時間に連続送信できません。少し待ってから再送してください。';
-  }
-  if (/provider is not enabled|unsupported provider|external provider/i.test(message)) {
-    return 'SupabaseでGoogleログインがまだ有効化されていません。Authentication > Sign In / Providers > Google の設定を確認してください。';
+    return 'リセットメールは短時間に連続送信できません。少し待ってから再送してください。';
   }
   return message;
 }
@@ -114,49 +115,6 @@ function assertConfigured() {
 
 function throwIf(error) {
   if (error) throw error;
-}
-
-function cleanOAuthParamsFromUrl() {
-  const params = new URLSearchParams(window.location.search);
-  params.delete('code');
-  const query = params.toString();
-  window.history.replaceState({}, document.title, `${window.location.pathname}${query ? `?${query}` : ''}`);
-}
-
-async function restoreSessionFromOAuthRedirect() {
-  const searchParams = new URLSearchParams(window.location.search);
-  const code = searchParams.get('code');
-  if (code) {
-    // 既存セッションが有効なら交換不要（再ログイン時のhang防止）
-    const storageKey = 'sb-scujxtelrspmsxexcrtj-auth-token';
-    const stored = JSON.parse(localStorage.getItem(storageKey) || '{}');
-    const now = Math.floor(Date.now() / 1000);
-    if (stored.access_token && stored.expires_at && stored.expires_at > now + 60) {
-      cleanOAuthParamsFromUrl();
-      return null; // 既存セッションを使う
-    }
-    showMessage('Google認証情報を確認中...');
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-    throwIf(error);
-    cleanOAuthParamsFromUrl();
-    return data.session;
-  }
-
-  if (!window.location.hash.includes('access_token=')) return null;
-
-  const params = new URLSearchParams(window.location.hash.slice(1));
-  const accessToken = params.get('access_token');
-  const refreshToken = params.get('refresh_token');
-  if (!accessToken || !refreshToken) return null;
-
-  const { data, error } = await supabase.auth.setSession({
-    access_token: accessToken,
-    refresh_token: refreshToken,
-  });
-  throwIf(error);
-
-  window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.search}`);
-  return data.session;
 }
 
 function minutesToHours(minutes) {
@@ -305,13 +263,8 @@ async function loadUsers() {
 async function init() {
   try {
     assertConfigured();
-    const restoredSession = await restoreSessionFromOAuthRedirect();
-    if (restoredSession) {
-      state.session = restoredSession;
-    } else {
-      const { data } = await supabase.auth.getSession();
-      state.session = data.session;
-    }
+    const { data } = await supabase.auth.getSession();
+    state.session = data.session;
     await safeRenderAuthState();
   } catch (error) {
     showMessage(normalizeError(error), true);
@@ -358,7 +311,7 @@ async function safeRenderAuthState() {
   try {
     await renderAuthState();
   } catch (error) {
-    console.error('Failed to render authenticated state:', error);
+    console.error('renderAuthState failed:', error);
     $('appPanel').classList.add('hidden');
     $('unauthorizedPanel').classList.add('hidden');
     if (!state.session) {
@@ -369,6 +322,7 @@ async function safeRenderAuthState() {
   } finally {
     _renderingAuthState = false;
     if (_pendingRenderAuthState) {
+      _pendingRenderAuthState = false;
       await safeRenderAuthState();
     }
   }
@@ -603,17 +557,10 @@ async function upsertAttendance(payload) {
 
 async function signIn() {
   assertConfigured();
-  const redirectTo = window.location.href.split('#')[0];
-  const { error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: {
-      redirectTo,
-      queryParams: {
-        hd: 'nikko-m.com',
-        prompt: 'select_account',
-      },
-    },
-  });
+  const email = $('loginEmail').value.trim();
+  const password = $('loginPassword').value;
+  if (!email || !password) throw new Error('メールアドレスとパスワードを入力してください。');
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
   throwIf(error);
 }
 
@@ -625,6 +572,26 @@ async function signOut() {
   state.users = [];
   state.monthly = null;
   await renderAuthState();
+}
+
+async function setNewPassword() {
+  const password = $('newPassword').value;
+  const confirm = $('confirmPassword').value;
+  if (!password || password.length < 6) throw new Error('パスワードは6文字以上で入力してください。');
+  if (password !== confirm) throw new Error('パスワードが一致しません。');
+  const { error } = await supabase.auth.updateUser({ password });
+  throwIf(error);
+  $('passwordResetPanel').classList.add('hidden');
+  showMessage('パスワードを変更しました。ログインしてください。');
+  await supabase.auth.signOut();
+  state.session = null;
+  await renderAuthState();
+}
+
+async function sendPasswordReset(email) {
+  const redirectTo = window.location.origin + window.location.pathname;
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+  throwIf(error);
 }
 
 async function clockIn() {
@@ -678,9 +645,9 @@ async function saveAdminAttendance() {
     work_date: date,
     user_id: userId,
     kind: $('adminKind').value,
+    leave_hours: $('adminLeaveHours').value ? Number($('adminLeaveHours').value) : null,
     clock_in: $('adminClockIn').value || null,
     clock_out: $('adminClockOut').value || null,
-    leave_hours: $('adminLeaveHours').value ? Number($('adminLeaveHours').value) : null,
     note: $('adminNote').value.trim(),
     edit_reason: reason,
   });
@@ -694,7 +661,7 @@ async function saveCalendarDay() {
       day_type: $('calendarType').value,
       name: $('calendarName').value.trim(),
       note: $('calendarNote').value.trim(),
-    });
+    }, { onConflict: 'work_date' });
   throwIf(error);
 }
 
@@ -759,7 +726,7 @@ function exportCsv() {
     row.note,
   ]));
   const csv = lines.map((row) => row.map((cell) => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
-  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -768,14 +735,31 @@ function exportCsv() {
   URL.revokeObjectURL(url);
 }
 
+// --- Event Listeners ---
+
 document.addEventListener('click', async (event) => {
   const tab = event.target.closest('.tab');
   if (tab) selectTab(tab.dataset.tab);
 });
 
 $('loginButton').addEventListener('click', async () => {
-  await performAction('loginButton', 'Googleログインへ移動中...', 'Googleログインへ移動します。', signIn);
+  await performAction('loginButton', 'ログイン中...', 'ログインしました。', signIn);
 });
+
+$('loginPassword').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('loginButton').click();
+});
+
+$('forgotPasswordButton').addEventListener('click', async () => {
+  const email = $('loginEmail').value.trim();
+  if (!email) {
+    showMessage('メールアドレスを入力してからパスワードリセットをクリックしてください。', true);
+    return;
+  }
+  await performAction('forgotPasswordButton', '送信中...', 'パスワードリセットメールを送信しました。受信トレイをご確認ください。', () => sendPasswordReset(email));
+});
+
+$('setPasswordButton').addEventListener('click', () => performAction('setPasswordButton', '変更中...', 'パスワードを変更しました。', setNewPassword));
 
 $('logoutButton').addEventListener('click', () => performAction('logoutButton', 'ログアウト中...', 'ログアウトしました。', signOut));
 $('logoutUnauthorizedButton').addEventListener('click', () => performAction('logoutUnauthorizedButton', 'ログアウト中...', 'ログアウトしました。', signOut));
@@ -847,6 +831,15 @@ $('saveCalendarButton').addEventListener('click', async () => {
 $('saveUsersButton').addEventListener('click', () => performAction('saveUsersButton', '保存中...', '保存しました。', saveUsers));
 $('exportCsvButton').addEventListener('click', () => performAction('exportCsvButton', 'CSVを作成中...', 'CSVを作成しました。', exportCsv));
 
+$('sendResetButton').addEventListener('click', () => {
+  const email = $('resetEmail').value.trim();
+  if (!email) {
+    showMessage('メールアドレスを入力してください。', true);
+    return;
+  }
+  performAction('sendResetButton', '送信中...', `${email} にパスワードリセットメールを送信しました。`, () => sendPasswordReset(email));
+});
+
 window.addEventListener('unhandledrejection', (event) => {
   console.error('Unhandled promise rejection:', event.reason);
   showMessage(`処理中にエラーが発生しました: ${normalizeError(event.reason)}`, true);
@@ -857,7 +850,16 @@ window.addEventListener('error', (event) => {
   showMessage(`処理中にエラーが発生しました: ${normalizeError(event.error || event.message)}`, true);
 });
 
-supabase.auth.onAuthStateChange(async (_event, session) => {
+supabase.auth.onAuthStateChange(async (event, session) => {
+  if (event === 'PASSWORD_RECOVERY') {
+    state.session = session;
+    $('loginPanel').classList.add('hidden');
+    $('appPanel').classList.add('hidden');
+    $('unauthorizedPanel').classList.add('hidden');
+    $('passwordResetPanel').classList.remove('hidden');
+    showMessage('新しいパスワードを入力してください。');
+    return;
+  }
   state.session = session;
   await safeRenderAuthState();
 });

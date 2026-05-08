@@ -6,7 +6,7 @@
     <title>管理職勤怠管理 Supabase版</title>
     <link rel="stylesheet" href="./styles.css">
     <script src="./config.js"></script>
-    <script type="module" src="./app.js?v=20260508-1252"></script>
+    <script type="module" src="./app.js?v=20260508-1500"></script>
   </head>
   <body>
     <div class="app">
@@ -23,8 +23,24 @@
 
         <section id="loginPanel" class="panel">
           <h2>ログイン</h2>
+          <div class="fields">
+            <label>メールアドレス<input id="loginEmail" type="email" autocomplete="email" placeholder="example@company.com"></label>
+            <label>パスワード<input id="loginPassword" type="password" autocomplete="current-password"></label>
+          </div>
           <div class="actions">
-            <button id="loginButton">Googleでログイン</button>
+            <button id="loginButton">ログイン</button>
+            <button id="forgotPasswordButton" class="secondary">パスワードリセット</button>
+          </div>
+        </section>
+
+        <section id="passwordResetPanel" class="panel hidden">
+          <h2>新しいパスワードを設定</h2>
+          <div class="fields">
+            <label>新しいパスワード<input id="newPassword" type="password" autocomplete="new-password" placeholder="6文字以上"></label>
+            <label>確認<input id="confirmPassword" type="password" autocomplete="new-password"></label>
+          </div>
+          <div class="actions">
+            <button id="setPasswordButton">パスワードを変更</button>
           </div>
         </section>
 
@@ -144,10 +160,20 @@
             </div>
 
             <div id="usersTab" class="hidden">
-              <h2>ユーザー</h2>
+              <h2>ユーザー管理</h2>
+              <p class="help-text">1行に「メールアドレス, 氏名, admin/user, TRUE/FALSE」の形式で記入してください。</p>
               <textarea id="usersText"></textarea>
               <div class="actions">
                 <button id="saveUsersButton">保存</button>
+              </div>
+
+              <h3>パスワードリセット送信</h3>
+              <p class="help-text">指定したメールアドレスにパスワードリセットのメールを送信します。（ユーザーはSupabase Dashboardで事前に作成が必要です）</p>
+              <div class="fields">
+                <label>メールアドレス<input id="resetEmail" type="email" placeholder="example@company.com"></label>
+              </div>
+              <div class="actions">
+                <button id="sendResetButton" class="secondary">リセットメールを送信</button>
               </div>
             </div>
           </section>
