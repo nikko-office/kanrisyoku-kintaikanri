@@ -261,27 +261,36 @@ async function loadUsers() {
 }
 
 async function init() {
+  console.log('[INIT] start');
   try {
     assertConfigured();
+    console.log('[INIT] assertConfigured OK');
     const { data, error } = await supabase.auth.getSession();
+    console.log('[INIT] getSession done, session=', data?.session?.user?.email ?? 'null', 'error=', error?.message ?? 'none');
     if (error) throw error;
     state.session = data.session;
+    console.log('[INIT] calling safeRenderAuthState');
     await safeRenderAuthState();
+    console.log('[INIT] safeRenderAuthState complete');
   } catch (error) {
+    console.log('[INIT] caught error:', error?.message);
     showMessage(normalizeError(error), true);
   }
 }
 
 async function renderAuthState() {
+  console.log('[RENDER] start, session=', state.session?.user?.email ?? 'null');
   const session = state.session;
   $('account').textContent = session?.user?.email || '';
   $('loginPanel').classList.toggle('hidden', Boolean(session));
   $('appPanel').classList.add('hidden');
   $('unauthorizedPanel').classList.add('hidden');
 
-  if (!session) return;
+  if (!session) { console.log('[RENDER] no session, showing loginPanel'); return; }
 
+  console.log('[RENDER] calling loadSettings');
   await loadSettings();
+  console.log('[RENDER] calling loadProfile');
   const profile = await loadProfile();
   if (!profile) {
     $('unauthorizedText').textContent = `${session.user.email} は利用者に登録されていません。ADMINに追加を依頼してください。`;
@@ -852,6 +861,7 @@ window.addEventListener('error', (event) => {
 });
 
 supabase.auth.onAuthStateChange(async (event, session) => {
+  console.log('[AUTH] event=', event, 'userId=', session?.user?.id?.substring(0,8) ?? 'null');
   if (event === 'INITIAL_SESSION') {
     // init() が getSession() で明示的に処理するのでここではスキップ
     return;
