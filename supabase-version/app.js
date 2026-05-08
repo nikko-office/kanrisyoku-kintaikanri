@@ -337,7 +337,16 @@ async function renderAuthState() {
   await loadMonthly();
 }
 
+let _renderingAuthState = false;
+let _pendingRenderAuthState = false;
+
 async function safeRenderAuthState() {
+  if (_renderingAuthState) {
+    _pendingRenderAuthState = true;
+    return;
+  }
+  _renderingAuthState = true;
+  _pendingRenderAuthState = false;
   try {
     await renderAuthState();
   } catch (error) {
@@ -349,6 +358,11 @@ async function safeRenderAuthState() {
     }
     const prefix = state.session ? 'ログインは完了しましたが、初期データの読み込みに失敗しました' : '初期データの読み込みに失敗しました';
     showMessage(`${prefix}: ${normalizeError(error)}`, true);
+  } finally {
+    _renderingAuthState = false;
+    if (_pendingRenderAuthState) {
+      await safeRenderAuthState();
+    }
   }
 }
 
