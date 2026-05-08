@@ -263,9 +263,8 @@ async function loadUsers() {
 async function init() {
   try {
     assertConfigured();
-    const { data } = await supabase.auth.getSession();
-    state.session = data.session;
-    await safeRenderAuthState();
+    // onAuthStateChange fires INITIAL_SESSION immediately and handles rendering.
+    // Do NOT call safeRenderAuthState() here — double-render leaves appPanel hidden.
   } catch (error) {
     showMessage(normalizeError(error), true);
   }
