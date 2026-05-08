@@ -110,6 +110,24 @@ function throwIf(error) {
   if (error) throw error;
 }
 
+async function restoreSessionFromOAuthHash() {
+  if (!window.location.hash.includes('access_token=')) return null;
+
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const accessToken = params.get('access_token');
+  const refreshToken = params.get('refresh_token');
+  if (!accessToken || !refreshToken) return null;
+
+  const { data, error } = await supabase.auth.setSession({
+    access_token: accessToken,
+    refresh_token: refreshToken,
+  });
+  throwIf(error);
+
+  window.history.replaceState({}, document.title, `${window.location.pathname}${window.location.search}`);
+  return data.session;
+}
+
 function minutesToHours(minutes) {
   if (minutes === null || minutes === undefined || minutes === '') return '';
   return `${Math.round((Number(minutes) / 60) * 100) / 100}h`;
@@ -256,8 +274,13 @@ async function loadUsers() {
 async function init() {
   try {
     assertConfigured();
-    const { data } = await supabase.auth.getSession();
-    state.session = data.session;
+    const restoredSession = await restoreSessionFromOAuthHash();
+    if (restoredSession) {
+      state.session = restoredSession;
+    } else {
+      const { data } = await supabase.auth.getSession();
+      state.session = data.session;
+    }
     await safeRenderAuthState();
   } catch (error) {
     showMessage(normalizeError(error), true);
