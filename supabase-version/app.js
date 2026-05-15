@@ -506,6 +506,11 @@ async function logout() {
   clearMessage();
 }
 
+$('changePasswordButton').addEventListener('click', () => {
+  showPanel('passwordResetPanel');
+  showMessage('新しいパスワードを入力してください。');
+});
+
 $('logoutButton').addEventListener('click', () => withBusy('logoutButton', 'ログアウト中...', '', logout));
 $('logoutUnauthorizedButton').addEventListener('click', () => withBusy('logoutUnauthorizedButton', 'ログアウト中...', '', logout));
 
