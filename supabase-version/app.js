@@ -61,6 +61,11 @@ function minutesToHours(min) {
   return `${Math.round((Number(min) / 60) * 100) / 100}h`;
 }
 
+function minutesToDecimalHours(min) {
+  if (min === null || min === undefined || min === '') return '';
+  return Math.round((Number(min) / 60) * 100) / 100;
+}
+
 function timeOnly(v) { return v ? String(v).slice(0, 5) : ''; }
 
 function weekdayLabel(dateStr) {
@@ -293,7 +298,8 @@ function summarizeRows(rows) {
     if (!map.has(row.userId)) {
       map.set(row.userId, { userId: row.userId, name: row.name,
         workDays: 0, workMinutes: 0, nightMinutes: 0,
-        paidLeaveDays: 0, leaveHours: 0, missingClockOut: 0 });
+        paidLeaveDays: 0, leaveHours: 0, missingClockOut: 0,
+        holidayWorkDays: 0 });
     }
     const s = map.get(row.userId);
     if (row.clockIn) s.workDays++;
@@ -303,6 +309,7 @@ function summarizeRows(rows) {
     if (row.kind === '有休') s.paidLeaveDays++;
     if (row.kind === '午前半休' || row.kind === '午後半休') s.paidLeaveDays += 0.5;
     if (row.missingClockOut) s.missingClockOut++;
+    if (row.clockIn && row.dayType !== '出勤日' && row.dayType !== '土曜出勤日') s.holidayWorkDays++;
   });
   return Array.from(map.values()).map((s) => ({
     ...s,
@@ -410,20 +417,51 @@ async function closeMonth(status) {
 
 function exportCsv() {
   const m = state.monthly;
-  const header = ['月度','締日','集計開始日','集計終了日','日付','曜日','日区分','日名','氏名','メール','勤務区分','出勤','退勤','休憩分','勤務分','深夜分','休暇時間','備考'];
-  const lines = [header].concat(m.rows.map((r) => [
-    m.period.label, `${state.settings.closingDay || 15}日`,
-    m.period.startDate, m.period.endDate,
-    r.date, r.weekday, r.dayType, r.dayName, r.name, r.email,
-    r.kind, r.clockIn, r.clockOut, r.breakMinutes, r.workMinutes,
-    r.nightMinutes, r.leaveHours, r.note,
-  ]));
+  const closingDay = `${state.settings.closingDay || 15}日`;
+  const detailHeader = ['日付','曜日','日区分','日名','勤務区分','出勤','退勤','休憩分','勤務時間','深夜時間','休暇時間','備考'];
+  const summaryHeader = ['氏名','メール','出勤日数','勤務時間','深夜時間','有休日数','休暇時間','休日勤務日数','退勤漏れ'];
+  const lines = [
+    ['勤怠表'],
+    ['月度', m.period.label],
+    ['締日', closingDay],
+    ['集計開始日', m.period.startDate],
+    ['集計終了日', m.period.endDate],
+    [],
+    ['人別集計'],
+    summaryHeader,
+  ];
+
+  m.summaries.forEach((s) => {
+    const firstRow = m.rows.find((r) => r.userId === s.userId) || {};
+    lines.push([
+      s.name, firstRow.email || '', s.workDays, s.workHours, s.nightHours,
+      s.paidLeaveDays, s.leaveHours, s.holidayWorkDays, s.missingClockOut,
+    ]);
+  });
+
+  lines.push([], ['勤怠明細']);
+  m.summaries.forEach((s) => {
+    const rows = m.rows
+      .filter((r) => r.userId === s.userId)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const firstRow = rows[0] || {};
+    lines.push([], ['氏名', s.name], ['メール', firstRow.email || ''], detailHeader);
+    rows.forEach((r) => {
+      lines.push([
+        r.date, r.weekday, r.dayType, r.dayName, r.kind, r.clockIn,
+        r.clockOut, r.breakMinutes, minutesToDecimalHours(r.workMinutes),
+        minutesToDecimalHours(r.nightMinutes), r.leaveHours, r.note,
+      ]);
+    });
+  });
+
   const csv = lines.map((row) => row.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `attendance-${m.period.periodKey}.csv`;
+  a.download = `勤怠表-${m.period.periodKey}.csv`;
   a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ─── 認証 ─────────────────────────────────────────────────
